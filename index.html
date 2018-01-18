@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Beyond Reality Face - BRFv4 - HTML5/Javascript face tracking</title>
+	<script async src="js/libs/brf_asmjs/BRFv4_JS_trial.js"></script>
+</head>
+
+<body>
+
+<video	id="_webcam" style="display: none;" playsinline></video>
+<canvas id="_imageData"></canvas>
+
+<script>
+	function init() {
+		var webcam		= document.getElementById("_webcam");		// our webcam video
+		var imageData	= document.getElementById("_imageData");	// image data for BRFv4
+		var brfManager	= null;
+		var resolution	= null;
+        var brfv4		= null;
+        
+        //Used in point tracking
+        var _pointsToAdd        = [];
+        var _numTrackedPoints   = 0;
+
+		startCamera();
+		function startCamera() {
+			// Start video playback once the camera was fetched.
+			function onStreamFetched (mediaStream) {
+				webcam.srcObject = mediaStream;
+				webcam.play();
+				// Check whether we know the video dimensions yet, if so, start BRFv4.
+				function onStreamDimensionsAvailable () {
+					if (webcam.videoWidth === 0) {
+						setTimeout(onStreamDimensionsAvailable, 100);
+					} else {
+						waitForSDK();
+					}
+				}
+				onStreamDimensionsAvailable();
+			}
+			window.navigator.mediaDevices.getUserMedia({video: {width: 640, height: 480, frameRate: 30}})
+				.then(onStreamFetched).catch(function () { alert("No camera available."); });
+		}
+		function waitForSDK() {
+			if(brfv4 === null) {
+				brfv4 = {locateFile: function() { return "js/libs/brf_asmjs/BRFv4_JS_trial.js.mem" }};
+				initializeBRF(brfv4);
+			}
+			if(brfv4.sdkReady) {
+				initSDK();
+			} else {
+				setTimeout(waitForSDK, 100);
+			}
+		}
+		function initSDK() {
+			// Resize the canvas to match the webcam video size.
+			imageData.width		= webcam.videoWidth;
+			imageData.height	= webcam.videoHeight;
+			resolution	= new brfv4.Rectangle(0, 0, imageData.width, imageData.height);
+			brfManager	= new brfv4.BRFManager();
+            brfManager.init(resolution, resolution, "com.ElectronTest.Robbinsa");
+            
+            //To enable and set up point tracking
+            brfManager.setMode(brfv4.BRFMode.FACE_TRACKING);
+            brfManager.setOpticalFlowParams(21, 4, 50, 0.00005);
+            brfManager.setOpticalFlowCheckPointsValidBeforeTracking(true);
+            _imageData.addEventListener("click", onClicked);
+            _imageData.mouseEnabled = true;
+
+			trackFaces();
+		}
+		function trackFaces() {
+            //Add points to be tracked
+            if(_pointsToAdd.length > 0) {
+                brfManager.addOpticalFlowPoints(_pointsToAdd);
+                _pointsToAdd.length = 0;
+            }
+
+			var imageDataCtx = imageData.getContext("2d");
+			imageDataCtx.setTransform(-1.0, 0, 0, 1, resolution.width, 0); // mirrored for draw of video
+			imageDataCtx.drawImage(webcam, 0, 0, resolution.width, resolution.height);
+            imageDataCtx.setTransform( 1.0, 0, 0, 1, 0, 0); // unmirrored for draw of results
+            brfManager.update(imageDataCtx.getImageData(0, 0, resolution.width, resolution.height).data);
+
+            var faces = brfManager.getFaces();
+            var faceFound = false;
+			for(var i = 0; i < faces.length; i++) {
+				var face = faces[i];
+				if(face.state === brfv4.BRFState.FACE_TRACKING_START ||
+				    face.state === brfv4.BRFState.FACE_TRACKING) {
+                    faceFound = true;    
+                    imageDataCtx.strokeStyle="#00a0ff";
+                    
+                    //Draw dots
+					for(var k = 0; k < face.vertices.length; k += 2) {
+						imageDataCtx.beginPath();
+						imageDataCtx.arc(face.vertices[k], face.vertices[k + 1], 2, 0, 2 * Math.PI);
+						imageDataCtx.stroke();
+                    }
+                    //Draw triangles connecting dots
+                    if (face.triangles.length >= 3) {
+                        for(var k = 0; k < face.triangles.length; k += 3) {
+                            var index = face.triangles[k]
+                            imageDataCtx.beginPath();
+                            imageDataCtx.moveTo(face.vertices[index*2], face.vertices[(index*2) + 1])
+                            index = face.triangles[k+1]
+                            imageDataCtx.lineTo(face.vertices[index*2], face.vertices[(index*2) + 1])
+                            index = face.triangles[k+2]
+                            imageDataCtx.lineTo(face.vertices[index*2], face.vertices[(index*2) + 1])
+                            imageDataCtx.closePath();
+                            imageDataCtx.stroke();
+                        } 
+                    }
+				}
+            }
+            //If no faces were found, draw rectangles where brfv4 is trying to locate faces
+            if (!faceFound) {
+                var rectangles = brfManager.getAllDetectedFaces();
+                for (var i = 0; i < rectangles.length; i++) {
+                    rect = rectangles[i];
+                    imageDataCtx.beginPath();
+                    imageDataCtx.rect(rect.x, rect.y, rect.width, rect.height);
+                    imageDataCtx.stroke();
+                }
+                rectangles = brfManager.getMergedDetectedFaces();
+                for (var i = 0; i < rectangles.length; i++) {
+                    rect = rectangles[i];
+                    imageDataCtx.beginPath();
+                    imageDataCtx.rect(rect.x, rect.y, rect.width, rect.height);
+                    imageDataCtx.stroke();
+                }
+            }
+
+            //Get points being tracked
+            var points = brfManager.getOpticalFlowPoints();
+            var states = brfManager.getOpticalFlowPointStates();
+
+            // Draw points by state: green valid, red invalid
+            for(i = 0; i < points.length; i++) {
+                if(states[i]) { //Valid
+                    imageDataCtx.strokeStyle="#00ff00";
+                    imageDataCtx.beginPath();
+                    imageDataCtx.arc(points[i].x, points[i].y, 3, 0, 2 * Math.PI);
+                    imageDataCtx.stroke();
+                } else { //Invalid
+                    imageDataCtx.strokeStyle="#ff0000";
+                    imageDataCtx.beginPath();
+                    imageDataCtx.arc(points[i].x, points[i].y, 3, 0, 2 * Math.PI);
+                    imageDataCtx.stroke();
+                }
+            }
+
+            if(points.length !== _numTrackedPoints) {
+                _numTrackedPoints = points.length;
+            }
+
+			requestAnimationFrame(trackFaces);
+        }
+        
+        function onClicked(event) {
+            var x = event.pageX;
+            var y = event.pageY;
+
+            // Add 1 point:
+            _pointsToAdd.push(new brfv4.Point(x, y));
+
+            //Add 100 points
+            /*var w = 60.0;
+            var step = 6.0;
+            var xStart = x - w * 0.5;
+            var xEnd = x + w * 0.5;
+            var yStart = y - w * 0.5;
+            var yEnd = y + w * 0.5;
+            var dy = yStart;
+            var dx = xStart;
+
+            for(; dy < yEnd; dy += step) {
+                for(dx = xStart; dx < xEnd; dx += step) {
+                    _pointsToAdd.push(new brfv4.Point(dx, dy));
+                }
+            }*/
+        }
+    }
+    
+	window.onload = init;
+</script>
+
+</body>
+
+</html>
